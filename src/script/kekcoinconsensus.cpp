@@ -47,6 +47,7 @@ public:
         return *this;
     }
 
+    int GetType() const { return m_type; }
 private:
     const int m_type;
     const int m_version;

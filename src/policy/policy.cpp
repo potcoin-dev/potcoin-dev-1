@@ -58,7 +58,7 @@ bool IsStandard(const CScript& scriptPubKey, txnouttype& whichType, const bool w
 
 int64_t FutureDrift(int64_t nTime)
 {
-    return nTime + 2 * 60;
+    return nTime + 10 * 60;
 }
 
 bool IsStandardTx(const CTransaction& tx, std::string& reason, const bool witnessEnabled)

@@ -8,6 +8,7 @@
 
 #include "addrman.h"
 #include "arith_uint256.h"
+#include "bignum.h"
 #include "blockencodings.h"
 #include "chainparams.h"
 #include "checkpoints.h"
@@ -127,19 +128,9 @@ static void CheckBlockIndex(const Consensus::Params& consensusParams);
 
 extern std::set<std::pair<COutPoint, unsigned int> > setStakeSeen;
 
-int nTargetSpacing = 60; // Blocktime: 60 secs
-
 unsigned int GetStakeSplitAge = 1 * 24 * 60 * 60;
 int64_t GetStakeCombineThreshold = 500 * COIN;
 int64_t GetStakeSplitThreshold = 2 * GetStakeCombineThreshold;
-
-arith_uint256 bnProofOfStakeLimit(~arith_uint256() >> 20);
-arith_uint256 bnProofOfStakeLimitV2(~arith_uint256() >> 48);
-
-const int DAILY_BLOCKCOUNT =  1440; // (24 * 60 * 60) / Blocktime
-int nStakeMinConfirmations = 66;
-unsigned int nStakeMinAge = 60 * 60 * 8;	// minimum for coin age: 8 hours
-unsigned int nModifierInterval = 10 * 60; // time to elapse before new modifier is computed
 
 /** Constant stuff for coinbase transactions we create: */
 CScript COINBASE_FLAGS;
@@ -541,7 +532,7 @@ void UpdateBlockAvailability(NodeId nodeid, const uint256 &hash) {
 // Requires cs_main
 bool CanDirectFetch(const Consensus::Params &consensusParams)
 {
-    return chainActive.Tip()->GetBlockTime() > GetAdjustedTime() - consensusParams.nPowTargetSpacing * 20;
+    return chainActive.Tip()->GetBlockTime() > GetAdjustedTime() - consensusParams.nBitcoinTargetSpacing * 20;
 }
 
 // Requires cs_main
@@ -1196,8 +1187,8 @@ bool AcceptToMemoryPoolWorker(CTxMemPool& pool, CValidationState& state, const C
         return state.DoS(0, false, REJECT_NONSTANDARD, "non-final");
 
     // For the same reasons as in the case with non-final transactions
-    if (tx.nTime > FutureDrift(GetAdjustedTime()))
-        return state.DoS(0, false, REJECT_NONSTANDARD, "time-too-new");
+    //if (tx.nTime > FutureDrift(GetAdjustedTime()))
+    //    return state.DoS(0, false, REJECT_NONSTANDARD, "time-too-new");
 
     // is it already in the memory pool?
     if (pool.exists(hash))
@@ -1800,15 +1791,30 @@ bool ReadBlockFromDisk(CBlock& block, const CBlockIndex* pindex, const Consensus
 
 CAmount GetBlockSubsidy(int nHeight, const Consensus::Params& consensusParams)
 {
-    CAmount nSubsidy = 0 * COIN;
+    CAmount nSubsidy = 420 * COIN;
 
-    if (nHeight+1 >= 1 && nHeight <= 100)
-    {
-        CAmount nSubsidy = 100000 * COIN;
-        return nSubsidy;
+    if (nHeight > 920000) {
+        nSubsidy = 50 * COIN;
+
+        // Hyper halving for POSv transition
+        if (nHeight > 930800) {
+            nSubsidy = 25 * COIN;
+        }
+        if (nHeight > 941600) {
+            nSubsidy = 12 * COIN;
+        }
+        if (nHeight > 952400) {
+            nSubsidy = 6 * COIN;
+        }
+        if (nHeight > 963200) {
+            nSubsidy = 3 * COIN;
+        }
+    } else {
+        // Subsidy is cut in half every 280000 blocks, which will occur approximately every 4 months
+        nSubsidy >>= (nHeight / consensusParams.nDigiShieldStartingHeight); // Potcoin: 280k blocks in ~4 months
     }
-
     return nSubsidy;
+
 }
 
 bool IsInitialBlockDownload()
@@ -1827,9 +1833,9 @@ bool IsInitialBlockDownload()
     if (fImporting || fReindex)
         return true;
     if (fCheckpointsEnabled && chainActive.Height() < Checkpoints::GetTotalBlocksEstimate(chainParams.Checkpoints()))
-        return true;
+       return true;
     bool state = (chainActive.Height() < pindexBestHeader->nHeight - 24 * 6 ||
-            std::max(chainActive.Tip()->GetBlockTime(), pindexBestHeader->GetBlockTime()) < GetTime() - nMaxTipAge);
+           std::max(chainActive.Tip()->GetBlockTime(), pindexBestHeader->GetBlockTime()) < GetTime() - nMaxTipAge);
     if (!state)
         latchToFalse.store(true, std::memory_order_relaxed);
     return state;
@@ -2052,7 +2058,7 @@ bool CheckTxInputs(const CTransaction& tx, CValidationState& state, const CCoins
 
             // If prev is coinbase, check that it's matured
             if (coins->IsCoinBase() || coins->IsCoinStake()) {
-                if (nSpendHeight - coins->nHeight < COINBASE_MATURITY && nSpendHeight - coins->nHeight > 0)
+                if (nSpendHeight - coins->nHeight < ::Params().GetConsensus().nCoinbaseMaturityV1 && nSpendHeight - coins->nHeight > 0)
                     return state.Invalid(false,
                         REJECT_INVALID, "bad-txns-premature-spend-of-coinbase",
                         strprintf("tried to spend %s at depth %d", coins->IsCoinBase() ?"coinbase":"coinstake", nSpendHeight - coins->nHeight));
@@ -2285,6 +2291,7 @@ bool DisconnectBlock(const CBlock& block, CValidationState& state, const CBlockI
     CDiskBlockPos pos = pindex->GetUndoPos();
     if (pos.IsNull())
         return error("DisconnectBlock(): no undo data available");
+
     if (!UndoReadFromDisk(blockUndo, pos, pindex->pprev->GetBlockHash()))
         return error("DisconnectBlock(): failure reading undo data");
 
@@ -2300,6 +2307,9 @@ bool DisconnectBlock(const CBlock& block, CValidationState& state, const CBlockI
         const CTransaction &tx = block.vtx[i];
         uint256 hash = tx.GetHash();
 
+	if (block.IsProofOfStake() && tx.IsCoinStake()) {
+	    continue;
+	}
         if (fAddressIndex) {
 
             for (unsigned int k = tx.vout.size(); k-- > 0;) {
@@ -2343,6 +2353,12 @@ bool DisconnectBlock(const CBlock& block, CValidationState& state, const CBlockI
         // but it must be corrected before txout nversion ever influences a network rule.
         if (outsBlock.nVersion < 0)
             outs->nVersion = outsBlock.nVersion;
+
+	// Print the height
+	LogPrintf("Checking Height %s\n", pindex->nHeight);
+        // Old tx in orphaned blocks do not have nTime set to block nTime. Set them now.
+	if (outs->nTime == 0 && outsBlock.nTime != 0)
+	    outs->nTime = outsBlock.nTime;
 
         if (*outs != outsBlock)
             fClean = fClean && error("DisconnectBlock(): added transaction mismatch? database corrupted");
@@ -2507,8 +2523,6 @@ static int64_t nTimeIndex = 0;
 static int64_t nTimeCallbacks = 0;
 static int64_t nTimeTotal = 0;
 
-int lastPOWBlock = 100;
-
 bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pindex,
                   CCoinsViewCache& view, const CChainParams& chainparams, bool fJustCheck, bool fProofOfStake)
 {
@@ -2552,9 +2566,10 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
         setStakeSeen.insert(make_pair(pindex->prevoutStake, pindex->nStakeTime));
 
     // Check proof of stake
-    if (block.nBits != GetNextTargetRequired(pindex->pprev, block.IsProofOfStake())){
-        return state.DoS(1,error("ContextualCheckBlock() : incorrect %s at height %d (%d)", !block.IsProofOfStake() ? "proof-of-work" : "proof-of-stake",pindex->pprev->nHeight, block.nBits), REJECT_INVALID, "bad-diffbits");
-    }
+    const CBlockHeader* pblockHeader = &block;
+    //if (block.nBits != GetNextWorkRequired(pindex->pprev, pblockHeader, chainparams.GetConsensus())){
+    //    return state.DoS(1,error("ContextualCheckBlock() : incorrect %s at height %d (%d)", !block.IsProofOfStake() ? "proof-of-work" : "proof-of-stake",pindex->pprev->nHeight, block.nBits), REJECT_INVALID, "bad-diffbits");
+    //}
 
     arith_uint256 hashProof;
 
@@ -2653,13 +2668,13 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
 
     // Start enforcing the DERSIG (BIP66) rules, for block.nVersion=3 blocks,
     // when 75% of the network has upgraded:
-    if (block.nVersion >= 3 && IsSuperMajority(3, pindex->pprev, chainparams.GetConsensus().nMajorityEnforceBlockUpgrade, chainparams.GetConsensus())) {
+    if (block.nVersion >= 5 && IsSuperMajority(5, pindex->pprev, chainparams.GetConsensus().nMajorityEnforceBlockUpgrade, chainparams.GetConsensus())) {
         flags |= SCRIPT_VERIFY_DERSIG;
     }
 
     // Start enforcing CHECKLOCKTIMEVERIFY, (BIP65) for block.nVersion=4
     // blocks, when 75% of the network has upgraded:
-    if (block.nVersion >= 4 && IsSuperMajority(4, pindex->pprev, chainparams.GetConsensus().nMajorityEnforceBlockUpgrade, chainparams.GetConsensus())) {
+    if (block.nVersion >= 5 && IsSuperMajority(5, pindex->pprev, chainparams.GetConsensus().nMajorityEnforceBlockUpgrade, chainparams.GetConsensus())) {
         flags |= SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY;
     }
 
@@ -3780,8 +3795,8 @@ bool CheckBlockHeader(const CBlockHeader& block, CValidationState& state, const 
         return state.DoS(50, false, REJECT_INVALID, "high-hash", false, "proof of work failed");
 
     // Check timestamp
-    if (block.GetBlockTime() > FutureDrift(GetAdjustedTime()))
-        return state.Invalid(error("CheckBlockHeader(): block timestamp too far in the future"), REJECT_INVALID, "time-too-new");
+    //if (block.GetBlockTime() > FutureDrift(GetAdjustedTime()))
+    //    return state.Invalid(error("CheckBlockHeader(): block timestamp too far in the future"), REJECT_INVALID, "time-too-new");
 
     return true;
 }
@@ -3846,8 +3861,8 @@ bool CheckBlock(const CBlock& block, CValidationState& state, const Consensus::P
             return state.DoS(100, false, REJECT_INVALID, "bad-cb-multiple", false, "more than one coinbase");
 
     // Check coinbase timestamp
-    if (block.GetBlockTime() > FutureDrift(block.vtx[0].nTime))
-            return state.DoS(25, error("CheckBlock(): coinbase timestamp is too early"), REJECT_INVALID, "bad-cb-time");
+    //if (block.GetBlockTime() > FutureDrift(block.vtx[0].nTime))
+    //        return state.DoS(25, error("CheckBlock(): coinbase timestamp is too early"), REJECT_INVALID, "bad-cb-time");
 
     // Check coinstake timestamp
     if (block.IsProofOfStake() && !CheckCoinStakeTimestamp(block.GetBlockTime(), block.vtx[1].nTime))
@@ -4007,7 +4022,7 @@ bool ContextualCheckBlockHeader(const CBlockHeader& block, CValidationState& sta
         return state.Invalid(false, REJECT_INVALID, "time-too-new", "block timestamp too far in the future");
 
     // Reject outdated version blocks when 95% (75% on testnet) of the network has upgraded:
-    for (int32_t version = 2; version < 5; ++version) // check for version 2, 3 and 4 upgrades
+    for (int32_t version = 6; version < 6; ++version) // check for version 2, 3 and 4 upgrades
         if (block.nVersion < version && IsSuperMajority(version, pindexPrev, consensusParams.nMajorityRejectBlockOutdated, consensusParams))
             return state.Invalid(false, REJECT_OBSOLETE, strprintf("bad-version(0x%08x)", version - 1),
                                  strprintf("rejected nVersion=0x%08x block", version - 1));
@@ -4026,7 +4041,7 @@ bool ContextualCheckBlock(const CBlock& block, CValidationState& state, CBlockIn
         nLockTimeFlags |= LOCKTIME_MEDIAN_TIME_PAST;
     }
 
-    if (block.IsProofOfWork() && nHeight > lastPOWBlock)
+    if (block.IsProofOfWork() && nHeight > consensusParams.nLastPOWBlock)
         return state.DoS(10, false, REJECT_INVALID, "check-pow-height", "pow-mined blocks not allowed");
 
     // Check CheckCoinStakeTimestamp
@@ -4044,9 +4059,9 @@ bool ContextualCheckBlock(const CBlock& block, CValidationState& state, CBlockIn
         }
     }
 
-    // Enforce block.nVersion=2 rule that the coinbase starts with serialized block height
-    // if 750 of the last 1,000 blocks are version 2 or greater (51/100 if testnet):
-    if (block.nVersion >= 2 && IsSuperMajority(2, pindexPrev, consensusParams.nMajorityEnforceBlockUpgrade, consensusParams))
+    // Enforce block.nVersion=4 rule that the coinbase starts with serialized block height
+    // if 750 of the last 1,000 blocks are version 4 or greater (51/100 if testnet):
+    if (block.nVersion >= 5 && IsSuperMajority(5, pindexPrev, consensusParams.nMajorityEnforceBlockUpgrade, consensusParams))
     {
         CScript expect = CScript() << nHeight;
         if (block.vtx[0].vin[0].scriptSig.size() < expect.size() ||
@@ -4244,14 +4259,14 @@ bool ProcessNewBlock(CValidationState& state, const CChainParams& chainparams, C
         if (pblock->hashPrevBlock != hashBestChain)
         {
             //Extra checks to prevent "fill up memory by spamming with bogus blocks"
-            const CBlockIndex* pcheckpoint = Checkpoints::AutoSelectSyncCheckpoint();
-            int64_t deltaTime = pblock->GetBlockTime() - pcheckpoint->nTime;
-            if (deltaTime < 0)
-            {
-                if (pfrom)
-                    Misbehaving(pfrom->GetId(), 1);
-                return error("ProcessBlock() : block with timestamp before last checkpoint");
-            }
+            //const CBlockIndex* pcheckpoint = Checkpoints::AutoSelectSyncCheckpoint();
+            //int64_t deltaTime = pblock->GetBlockTime() - pcheckpoint->nTime;
+            //if (deltaTime < 0)
+            //{
+            //    if (pfrom)
+            //        Misbehaving(pfrom->GetId(), 1);
+            //    return error("ProcessBlock() : block with timestamp before last checkpoint");
+            //}
         }
 
         // Store to disk
@@ -5662,12 +5677,14 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             // cmpctblock messages.
             // We send this to non-NODE NETWORK peers as well, because
             // they may wish to request compact blocks from us
-//            bool fAnnounceUsingCMPCTBLOCK = false;
-//            uint64_t nCMPCTBLOCKVersion = 1;
-//            pfrom->PushMessage(NetMsgType::SENDCMPCT, fAnnounceUsingCMPCTBLOCK, nCMPCTBLOCKVersion);
+            bool fAnnounceUsingCMPCTBLOCK = false;
+            uint64_t nCMPCTBLOCKVersion = 2;
+	    if (nLocalServices & NODE_WITNESS)
+		pfrom->PushMessage(NetMsgType::SENDCMPCT, fAnnounceUsingCMPCTBLOCK, nCMPCTBLOCKVersion);
+	    nCMPCTBLOCKVersion = 1;
+            pfrom->PushMessage(NetMsgType::SENDCMPCT, fAnnounceUsingCMPCTBLOCK, nCMPCTBLOCKVersion);
         }
     }
-
 
     else if (strCommand == NetMsgType::ADDR)
     {
@@ -5764,12 +5781,6 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             return error("message inv size() = %u", vInv.size());
         }
 
-        bool fBlocksOnly = !fRelayTxes;
-
-        // Allow whitelisted peers to send data other than blocks in blocks only mode if whitelistrelay is true
-        if (pfrom->fWhitelisted && GetBoolArg("-whitelistrelay", DEFAULT_WHITELISTRELAY))
-            fBlocksOnly = false;
-
         LOCK(cs_main);
 
         uint32_t nFetchFlags = GetFetchFlags(pfrom, chainActive.Tip(), chainparams.GetConsensus());
@@ -5800,30 +5811,20 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                     // time the block arrives, the header chain leading up to it is already validated. Not
                     // doing this will result in the received block being rejected as an orphan in case it is
                     // not a direct successor.
-                    pfrom->PushMessage(NetMsgType::GETHEADERS, chainActive.GetLocator(pindexBestHeader), inv.hash);
-                    CNodeState *nodestate = State(pfrom->GetId());
-                    if (CanDirectFetch(chainparams.GetConsensus()) &&
-                        nodestate->nBlocksInFlight < MAX_BLOCKS_IN_TRANSIT_PER_PEER &&
-                        (!IsWitnessEnabled(chainActive.Tip(), chainparams.GetConsensus()) || State(pfrom->GetId())->fHaveWitness)) {
-                        inv.type |= nFetchFlags;
-//                        if (nodestate->fProvidesHeaderAndIDs && !(nLocalServices & NODE_WITNESS))
-//                            vToFetch.push_back(CInv(MSG_CMPCT_BLOCK, inv.hash));
-//                        else
-                            vToFetch.push_back(inv);
-                        // Mark block as in flight already, even though the actual "getdata" message only goes out
-                        // later (within the same cs_main lock, though).
-                        MarkBlockAsInFlight(pfrom->GetId(), inv.hash, chainparams.GetConsensus());
-                    }
+                    pfrom->PushMessage(NetMsgType::GETBLOCKS, chainActive.GetLocator(pindexBestHeader), inv.hash);
+                    //CNodeState *nodestate = State(pfrom->GetId());
+                    inv.type |= nFetchFlags;
+                    vToFetch.push_back(inv);
+                    // Mark block as in flight already, even though the actual "getdata" message only goes out
+                    // later (within the same cs_main lock, though).
+                    MarkBlockAsInFlight(pfrom->GetId(), inv.hash, chainparams.GetConsensus());
                     LogPrint("net", "getheaders (%d) %s to peer=%d\n", pindexBestHeader->nHeight, inv.hash.ToString(), pfrom->id);
                 }
             }
             else
             {
                 pfrom->AddInventoryKnown(inv);
-                if (fBlocksOnly)
-                    LogPrint("net", "transaction (%s) inv sent in violation of protocol peer=%d\n", inv.hash.ToString(), pfrom->id);
-                else if (!fAlreadyHave && !fImporting && !fReindex && !IsInitialBlockDownload())
-                    pfrom->AskFor(inv);
+                pfrom->AskFor(inv);
             }
 
             // Track requests for our stuff
@@ -5887,7 +5888,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             }
             // If pruning, don't inv blocks unless we have on disk and are likely to still have
             // for some reasonable time window (1 hour) that block relay might require.
-            const int nPrunedBlocksLikelyToHave = MIN_BLOCKS_TO_KEEP - 3600 / chainparams.GetConsensus().nPowTargetSpacing;
+            const int nPrunedBlocksLikelyToHave = MIN_BLOCKS_TO_KEEP - 3600 / chainparams.GetConsensus().nBitcoinTargetSpacing;
             if (fPruneMode && (!(pindex->nStatus & BLOCK_HAVE_DATA) || pindex->nHeight <= chainActive.Tip()->nHeight - nPrunedBlocksLikelyToHave))
             {
                 LogPrint("net", " getblocks stopping, pruned or too old block at %d %s\n", pindex->nHeight, pindex->GetBlockHash().ToString());
@@ -6162,7 +6163,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         if (mapBlockIndex.find(cmpctblock.header.hashPrevBlock) == mapBlockIndex.end()) {
             // Doesn't connect (or is genesis), instead of DoSing in AcceptBlockHeader, request deeper headers
             if (!IsInitialBlockDownload())
-                pfrom->PushMessage(NetMsgType::GETHEADERS, chainActive.GetLocator(pindexBestHeader), uint256());
+                pfrom->PushMessage(NetMsgType::GETBLOCKS, chainActive.GetLocator(pindexBestHeader), uint256());
             return true;
         }
 
@@ -6336,8 +6337,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         for (unsigned int n = 0; n < nCount; n++) {
 
             vRecv >> headers[n];
-
-            //ReadCompactSize(vRecv); // ignore tx count; assume it is 0.
+            ReadCompactSize(vRecv); // ignore tx count; assume it is 0.
         }
 
         {
@@ -6360,7 +6360,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         //   nUnconnectingHeaders gets reset back to 0.
         if (mapBlockIndex.find(headers[0].hashPrevBlock) == mapBlockIndex.end() && nCount < MAX_BLOCKS_TO_ANNOUNCE) {
             nodestate->nUnconnectingHeaders++;
-            pfrom->PushMessage(NetMsgType::GETHEADERS, chainActive.GetLocator(pindexBestHeader), uint256());
+            pfrom->PushMessage(NetMsgType::GETBLOCKS, chainActive.GetLocator(pindexBestHeader), uint256());
             LogPrint("net", "received header %s: missing prev block %s, sending getheaders (%d) to end (peer=%d, nUnconnectingHeaders=%d)\n",
                     headers[0].GetHash().ToString(),
                     headers[0].hashPrevBlock.ToString(),
@@ -6410,7 +6410,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             // TODO: optimize: if pindexLast is an ancestor of chainActive.Tip or pindexBestHeader, continue
             // from there instead.
             LogPrint("net", "more getheaders (%d) to end to peer=%d (startheight:%d)\n", pindexLast->nHeight, pfrom->id, pfrom->nStartingHeight);
-            pfrom->PushMessage(NetMsgType::GETHEADERS, chainActive.GetLocator(pindexLast), uint256());
+            pfrom->PushMessage(NetMsgType::GETBLOCKS, chainActive.GetLocator(pindexLast), uint256());
         }
 
         bool fCanDirectFetch = CanDirectFetch(chainparams.GetConsensus());
@@ -6457,13 +6457,13 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                             pindexLast->GetBlockHash().ToString(), pindexLast->nHeight);
                 }
                 if (vGetData.size() > 0) {
-//                    if (nodestate->fProvidesHeaderAndIDs && vGetData.size() == 1 && mapBlocksInFlight.size() == 1 && pindexLast->pprev->IsValid(BLOCK_VALID_CHAIN) && !(nLocalServices & NODE_WITNESS)) {
-//                        // We seem to be rather well-synced, so it appears pfrom was the first to provide us
-//                        // with this block! Let's get them to announce using compact blocks in the future.
+                    if (nodestate->fProvidesHeaderAndIDs && vGetData.size() == 1 && mapBlocksInFlight.size() == 1 && pindexLast->pprev->IsValid(BLOCK_VALID_CHAIN) && !(nLocalServices & NODE_WITNESS)) {
+                        // We seem to be rather well-synced, so it appears pfrom was the first to provide us
+                        // with this block! Let's get them to announce using compact blocks in the future.
 //                        MaybeSetPeerAsAnnouncingHeaderAndIDs(nodestate, pfrom);
-//                        // In any case, we want to download using a compact block, not a regular one
-//                        vGetData[0] = CInv(MSG_CMPCT_BLOCK, vGetData[0].hash);
-//                    }
+                        // In any case, we want to download using a compact block, not a regular one
+                        vGetData[0] = CInv(MSG_CMPCT_BLOCK, vGetData[0].hash);
+                    }
                     pfrom->PushMessage(NetMsgType::GETDATA, vGetData);
                 }
             }
@@ -6991,7 +6991,7 @@ bool SendMessages(CNode* pto)
                 if (pindexStart->pprev)
                     pindexStart = pindexStart->pprev;
                 LogPrint("net", "initial getheaders (%d) to peer=%d (startheight:%d)\n", pindexStart->nHeight, pto->id, pto->nStartingHeight);
-                pto->PushMessage(NetMsgType::GETHEADERS, chainActive.GetLocator(pindexStart), uint256());
+                pto->PushMessage(NetMsgType::GETBLOCKS, chainActive.GetLocator(pindexStart), uint256());
             }
         }
 
@@ -7277,7 +7277,7 @@ bool SendMessages(CNode* pto)
         if (!pto->fDisconnect && state.vBlocksInFlight.size() > 0) {
             QueuedBlock &queuedBlock = state.vBlocksInFlight.front();
             int nOtherPeersWithValidatedDownloads = nPeersWithValidatedDownloads - (state.nBlocksInFlightValidHeaders > 0);
-            if (nNow > state.nDownloadingSince + consensusParams.nPowTargetSpacing * (BLOCK_DOWNLOAD_TIMEOUT_BASE + BLOCK_DOWNLOAD_TIMEOUT_PER_PEER * nOtherPeersWithValidatedDownloads)) {
+            if (nNow > state.nDownloadingSince + consensusParams.nBitcoinTargetSpacing * (BLOCK_DOWNLOAD_TIMEOUT_BASE + BLOCK_DOWNLOAD_TIMEOUT_PER_PEER * nOtherPeersWithValidatedDownloads)) {
                 LogPrintf("Timeout downloading block %s from peer=%d, disconnecting\n", queuedBlock.hash.ToString(), pto->id);
                 pto->fDisconnect = true;
             }
@@ -7400,52 +7400,8 @@ const CBlockIndex* GetLastBlockIndex(const CBlockIndex* pindex, bool fProofOfSta
 
 unsigned int ComputedMinStake(unsigned int nBase, int64_t nTime, unsigned int nBlockTime)
 {
-  return ComputeMaxBits(bnProofOfStakeLimit, nBase, nTime);
-}
-
-static int64_t nTargetTimespan = 22 * 60;  // 12.5 mins
-
-unsigned int GetNextTargetRequired(const CBlockIndex* pindexLast, bool fProofOfStake)
-{
-
-    CBigNum bnTargetLimit = CBigNum(ArithToUint256(fProofOfStake ? GetProofOfStakeLimit(pindexLast->nHeight) : Params().ProofOfWorkLimit()));
-
-    if (pindexLast == NULL)
-        return bnTargetLimit.GetCompact(); // genesis block
-
-
-    const CBlockIndex* pindexPrev = GetLastBlockIndex(pindexLast, fProofOfStake);
-    if (pindexPrev->pprev == NULL)
-        return bnTargetLimit.GetCompact(); // first block
-
-    const CBlockIndex* pindexPrevPrev = GetLastBlockIndex(pindexPrev->pprev, fProofOfStake);
-    if (pindexPrevPrev->pprev == NULL)
-        return bnTargetLimit.GetCompact(); // second block
-
-    int64_t nActualSpacing = pindexPrev->GetBlockTime() - pindexPrevPrev->GetBlockTime();
-    if (nActualSpacing > nTargetSpacing * 10)
-        nActualSpacing = nTargetSpacing * 10;
-
-    // ppcoin: target change every block
-    // ppcoin: retarget with exponential moving toward target spacing
-    CBigNum bnNew;
-
-    bnNew.SetCompact(pindexPrev->nBits);
-
-    CBigNum nInterval = (nTargetTimespan) / (nTargetSpacing);
-    bnNew *= (((nInterval - 1)) * (nTargetSpacing) + (nActualSpacing) + (nActualSpacing));
-    bnNew /= (((nInterval + 1)) * (nTargetSpacing));
-
-    if (bnNew <= 0 || bnNew > bnTargetLimit)
-        bnNew = bnTargetLimit;
-
-    return bnNew.GetCompact();
-}
-
-
-arith_uint256 GetProofOfStakeLimit(int nHeight)
-{
-    return (bnProofOfStakeLimitV2);
+  arith_uint256 posLimit = UintToArith256(Params().GetConsensus().posLimit);
+  return ComputeMaxBits(posLimit, nBase, nTime);
 }
 
 bool TransactionGetCoinAge(CTransaction& transaction, uint64_t& nCoinAge)
@@ -7465,28 +7421,21 @@ bool TransactionGetCoinAge(CTransaction& transaction, uint64_t& nCoinAge)
         if (!GetTransaction(txin.prevout.hash, txPrev, Params().GetConsensus(), hashBlock, true))
             continue;  // previous transaction not in main chain
 
-        if (transaction.nTime < txPrev.nTime)
+        // Read block header
+        CBlock block;
+        if (!mapBlockIndex.count(hashBlock))
+            return false; // unable to read block of previous transaction
+	if (!ReadBlockFromDisk(block, mapBlockIndex[hashBlock], Params().GetConsensus()))
+            return false; // unable to read block of previous transaction
+        if (block.nTime + Params().GetConsensus().nStakeMinAge > transaction.nTime)
+            continue; // only count coins meeting min age requirement
+
+        if (transaction.nTime != 0 && transaction.nTime < txPrev.nTime)
             return false;  // Transaction timestamp violation
 
-        if (mapBlockIndex.count(hashBlock) == 0)
-            return false; //Block not found
-
-        //CCoinsViewCache inputs(pcoinsTip);
-        //const COutPoint &prevout = txPrev.vin[0].prevout;
-        //const CCoins* coins = inputs.AccessCoins(prevout.hash);
-        //assert(coins);
-
-        //int nSpendHeight = GetSpendHeight(inputs);
-
-        //if (nSpendHeight - coins->nHeight < nStakeMinConfirmations - 1  && nSpendHeight - coins->nHeight > 0)
-        //  {
-        //   LogPrintf("CheckProofOfStake(): tried to stake at depth %d", nSpendHeight - coins->nHeight);
-        //    continue;
-        // }
-
         int64_t nValueIn = txPrev.vout[txin.prevout.n].nValue;
-        bnCentSecond += CBigNum(nValueIn) * (transaction.nTime-txPrev.nTime) / CENT;
-
+        int64_t nTimeWeight = GetCoinAgeWeight(txPrev.nTime, transaction.nTime);
+        bnCentSecond += CBigNum(nValueIn) * nTimeWeight / CENT;
 
         LogPrint("coinage", "coin age nValueIn=%d nTimeDiff=%d bnCentSecond=%s\n", nValueIn, transaction.nTime - txPrev.nTime, bnCentSecond.ToString());
     }
@@ -7508,7 +7457,7 @@ int64_t GetWeight(int64_t nIntervalBeginning, int64_t nIntervalEnd)
     // this change increases active coins participating the hash and helps
     // to secure the network when proof-of-stake difficulty is low
 
-    return nIntervalEnd - nIntervalBeginning - nStakeMinAge;
+    return nIntervalEnd - nIntervalBeginning - Params().GetConsensus().nStakeMinAge;
 }
 
 // Get the last stake modifier and its generation time from a given block
@@ -7532,7 +7481,7 @@ static bool GetLastStakeModifier(const CBlockIndex* pindex, uint64_t& nStakeModi
 static int64_t GetStakeModifierSelectionIntervalSection(int nSection)
 {
     assert (nSection >= 0 && nSection < 64);
-    return (nModifierInterval * 63 / (63 + ((63 - nSection) * (MODIFIER_INTERVAL_RATIO - 1))));
+    return (Params().GetConsensus().nStakeModifierInterval * 63 / (63 + ((63 - nSection) * (MODIFIER_INTERVAL_RATIO - 1))));
 }
 
 // Get stake modifier selection interval (in seconds)
@@ -7609,6 +7558,7 @@ static bool SelectBlockFromCandidates(vector<pair<int64_t, uint256> >& vSortedBy
 // blocks.
 bool ComputeNextStakeModifier(const CBlockIndex* pindexPrev, uint64_t& nStakeModifier, bool& fGeneratedStakeModifier)
 {
+    int32_t nModifierInterval = Params().GetConsensus().nStakeModifierInterval;
     nStakeModifier = 0;
     fGeneratedStakeModifier = false;
     if (!pindexPrev)
@@ -7627,7 +7577,7 @@ bool ComputeNextStakeModifier(const CBlockIndex* pindexPrev, uint64_t& nStakeMod
 
     // Sort candidate blocks by timestamp
     vector<pair<int64_t, uint256> > vSortedByTimestamp;
-    vSortedByTimestamp.reserve(64 * nModifierInterval / GetTargetSpacing(pindexPrev->nHeight));
+    vSortedByTimestamp.reserve(64 * nModifierInterval / Params().GetConsensus().nBitcoinTargetSpacing);
     int64_t nSelectionInterval = GetStakeModifierSelectionInterval();
     int64_t nSelectionIntervalStart = (pindexPrev->GetBlockTime() / nModifierInterval) * nModifierInterval - nSelectionInterval;
     LogPrint("stakemodifier", "nSelectionInterval = %d nSelectionIntervalStart = %d\n",nSelectionInterval,nSelectionIntervalStart);
@@ -7699,49 +7649,47 @@ uint256 ComputeStakeModifierV2(const CBlockIndex* pindexPrev, const uint256& ker
     return Hash(ss.begin(), ss.end());
 }
 
-static bool CheckStakeKernelHashV2(CBlockIndex* pindexPrev, unsigned int nBits, unsigned int nTimeBlockFrom, const CTransaction& txPrev, const COutPoint& prevout, unsigned int nTimeTx, arith_uint256& hashProofOfStake, arith_uint256& targetProofOfStake, bool fPrintProofOfStake)
+bool CheckStakeKernelHash(unsigned int nBits, const CBlock& blockFrom, unsigned int nTxPrevOffset, const CTransaction& txPrev, const COutPoint& prevout, unsigned int nTimeTx, arith_uint256& hashProofOfStake, arith_uint256& targetProofOfStake, bool fPrintProofOfStake)
 {
+    unsigned int nTimeBlockFrom = blockFrom.GetBlockTime();
+    unsigned int nTimeTxPrev = txPrev.nTime;
+
+    if (nTimeTxPrev == 0)
+	nTimeTxPrev = nTimeBlockFrom;
 
     if (nTimeTx < txPrev.nTime)  // Transaction timestamp violation
         return error("CheckStakeKernelHash() : nTime violation");
 
+    if (nTimeBlockFrom + Params().GetConsensus().nStakeMinAge > nTimeTx)
+	return error("CheckStakeKernelHash() : min age violation");
 
-    // Base target
-    CBigNum bnTarget;
-    bnTarget.SetCompact(nBits);
-
-    // Weighted target
+    CBigNum bnTargetPerCoinDay;
+    bnTargetPerCoinDay.SetCompact(nBits);
     int64_t nValueIn = txPrev.vout[prevout.n].nValue;
-    CBigNum bnWeight = CBigNum(nValueIn);
-    bnTarget *= bnWeight;
-
-    targetProofOfStake = UintToArith256(bnTarget.getuint256());
-
-    uint64_t nStakeModifier = pindexPrev->nStakeModifier;
-    uint256 bnStakeModifierV2 = pindexPrev->bnStakeModifierV2;
-    int nStakeModifierHeight = pindexPrev->nHeight;
-    int64_t nStakeModifierTime = pindexPrev->nTime;
+    uint256 hashBlockFrom = blockFrom.GetHash();
+    CBigNum bnCoinDayWeight = CBigNum(nValueIn) * GetCoinAgeWeight((int64_t)nTimeTxPrev, (int64_t)nTimeTx) / COIN / (24 * 60 * 60);
+    targetProofOfStake = UintToArith256((bnCoinDayWeight * bnTargetPerCoinDay).getuint256());
 
     // Calculate hash
     CDataStream ss(SER_GETHASH, 0);
-    ss << bnStakeModifierV2 << txPrev.nTime << prevout.hash << prevout.n << nTimeTx;
-    hashProofOfStake = UintToArith256(Hash(ss.begin(), ss.end()));
+    uint64_t nStakeModifier = 0;
+    int nStakeModifierHeight = 0;
+    int64_t nStakeModifierTime = 0;
 
-    if (fPrintProofOfStake)
-    {
-        LogPrint("stakemodifier","CheckStakeKernelHash() : using modifier 0x%016x at height=%d timestamp=%s for block from timestamp=%s\n",
-            nStakeModifier, nStakeModifierHeight,
-            DateTimeStrFormat("%Y-%m-%d %H:%M:%S", nStakeModifierTime),
-            DateTimeStrFormat("%Y-%m-%d %H:%M:%S", nTimeBlockFrom));
-        LogPrint("stakemodifier","CheckStakeKernelHash() : check modifier=0x%016x nTimeBlockFrom=%u nTimeTxPrev=%u nPrevout=%u nTimeTx=%u hashProof=%s bnTarget=%s nBits=%08x nValueIn=%d bnWeight=%s\n",
-            nStakeModifier,
-            nTimeBlockFrom, txPrev.nTime, prevout.n, nTimeTx,
-            hashProofOfStake.ToString(),bnTarget.ToString(), nBits, nValueIn,bnWeight.ToString());
+    if (!GetKernelStakeModifier(hashBlockFrom, nStakeModifier, nStakeModifierHeight, nStakeModifierTime, fPrintProofOfStake)) {
+	LogPrintf("CheckStakeKernelHash() : Get Kernel Stake Modifier Failed");
+        return false;
     }
 
+    ss << nStakeModifier;
+
+    ss << nTimeBlockFrom << nTxPrevOffset << nTimeTxPrev << prevout.n << nTimeTx;
+
     // Now check if proof-of-stake hash meets target protocol
-    if (CBigNum(ArithToUint256(hashProofOfStake)) > bnTarget)
+    if (CBigNum(ArithToUint256(hashProofOfStake)) > bnCoinDayWeight * bnTargetPerCoinDay) {
+      LogPrintf("Proof-Of-Stake hash doesnt meet target protocol");
       return false;
+    }
 
     if (fDebug && !fPrintProofOfStake)
     {
@@ -7756,14 +7704,6 @@ static bool CheckStakeKernelHashV2(CBlockIndex* pindexPrev, unsigned int nBits, 
     }
 
     return true;
-}
-
-bool CheckStakeKernelHash(CBlockIndex* pindexPrev, unsigned int nBits, CBlockIndex& blockFrom, const CTransaction& txPrev, const COutPoint& prevout, unsigned int nTimeTx, arith_uint256& hashProofOfStake, arith_uint256& targetProofOfStake, bool fPrintProofOfStake)
-{
-    // if (IsProtocolV2(pindexPrev->nHeight+1))
-        return CheckStakeKernelHashV2(pindexPrev, nBits, blockFrom.GetBlockTime(), txPrev, prevout, nTimeTx, hashProofOfStake, targetProofOfStake, true);
-    // else
-        // return CheckStakeKernelHashV1(nBits, blockFrom, nTxPrevOffset, txPrev, prevout, nTimeTx, hashProofOfStake, targetProofOfStake, fPrintProofOfStake);
 }
 
 //Check kernel hash target and coinstake signature
@@ -7808,7 +7748,7 @@ bool CheckProofOfStake(CBlockIndex* pindexPrev, const CTransaction& tx, unsigned
 
     // Verify depth
     int nSpendHeight = GetSpendHeight(inputs);
-    if (nSpendHeight - coins->nHeight < nStakeMinConfirmations - 1  && nSpendHeight - coins->nHeight > 0)
+    if (nSpendHeight - coins->nHeight < Params().GetConsensus().nCoinbaseMaturityV1 - 1  && nSpendHeight - coins->nHeight > 0)
 	return error("CheckProofOfStake(): tried to stake at depth %d", nSpendHeight - coins->nHeight);
 
     if (mapBlockIndex.count(hashBlock) == 0)
@@ -7819,7 +7759,13 @@ bool CheckProofOfStake(CBlockIndex* pindexPrev, const CTransaction& tx, unsigned
     if (txin.prevout.hash != txPrev.GetHash())
         return error("CheckProofOfStake(): Coinstake input does not match previous output %s",txin.prevout.hash.GetHex());
 
-    if (!CheckStakeKernelHash(pindexPrev, nBits, *pblockindex, txPrev, txin.prevout, tx.nTime, hashProofOfStake, targetProofOfStake, fDebug))
+    // Read block from disk.
+    CBlock block;
+    if (!ReadBlockFromDisk(block, pblockindex, Params().GetConsensus()))
+	return error("CheckProofOfStake() : Failed to read block from disk");
+
+
+    if (!CheckStakeKernelHash(block.nBits, block, txin.prevout.n, txPrev, txin.prevout, tx.nTime, hashProofOfStake, targetProofOfStake, fDebug))
         return error("CheckProofOfStake() : INFO: check kernel failed on coinstake %s, hashProof=%s", tx.GetHash().ToString(), hashProofOfStake.ToString()); // may occur during initial download or if behind on block chain sync
 
     return true;
@@ -7828,7 +7774,7 @@ bool CheckProofOfStake(CBlockIndex* pindexPrev, const CTransaction& tx, unsigned
 // Check whether the coinstake timestamp meets protocol
 bool CheckCoinStakeTimestamp(int64_t nTimeBlock, int64_t nTimeTx)
 {
-    return (nTimeBlock == nTimeTx) && ((nTimeTx & STAKE_TIMESTAMP_MASK) == 0);
+    return (nTimeBlock == nTimeTx);
 }
 
 bool CheckKernel(CBlockIndex* pindexPrev, unsigned int nBits, int64_t nTime, const COutPoint& prevout, int64_t* pBlockTime)
@@ -7861,7 +7807,7 @@ bool CheckKernel(CBlockIndex* pindexPrev, unsigned int nBits, int64_t nTime, con
 
     int nSpendHeight = GetSpendHeight(inputs);
 
-    if (nSpendHeight - coins->nHeight < nStakeMinConfirmations - 1  && nSpendHeight - coins->nHeight > 0)
+    if (nSpendHeight - coins->nHeight < Params().GetConsensus().nCoinbaseMaturityV1 - 1  && nSpendHeight - coins->nHeight > 0)
     {
     	LogPrintf("CheckProofOfStake(): tried to stake at depth %d", nSpendHeight - coins->nHeight);
             return false;
@@ -7873,51 +7819,23 @@ bool CheckKernel(CBlockIndex* pindexPrev, unsigned int nBits, int64_t nTime, con
     if (!pwalletMain->mapWallet.count(prevout.hash))
         return("CheckProofOfStake(): Couldn't get Tx Index");
 
-    return CheckStakeKernelHash(pindexPrev, nBits, *pblockindex, txPrev, prevout, nTime, hashProofOfStake, targetProofOfStake);
+    // Read block from disk.
+    CBlock block;
+    if (!ReadBlockFromDisk(block, pblockindex, Params().GetConsensus()))
+	return("CheckProofOfStake() : Failed to read block from disk");
+
+    //return CheckStakeKernelHash(nBits, block, txin.prevout.n, txPrev, prevout, nTime, hashProofOfStake, targetProofOfStake, false);
+    //return CheckStakeKernelHash(pindexPrev, nBits, block, txPrev, prevout, nTime, hashProofOfStake, targetProofOfStake);
+    return true;
 }
 
 // staker's coin stake reward based on coin age spent (coin-days)
 int64_t GetProofOfStakeReward(int nHeight, int64_t nCoinAge, int64_t nFees)
 {
-    int64_t nSubsidy = 50 * COIN;
-
-    if(nHeight >= 1 && nHeight <= 100)
-        {
-            nSubsidy = 0 * COIN;
-        }
-
-    else if(nHeight >= 101 && nHeight <= 9999)
-        {
-            nSubsidy = 50 * COIN;
-        }
-    
-    else if(nHeight >= 10000 && nHeight <= 19999)
-        {
-            nSubsidy = 25 * COIN;
-        }
-
-    else if(nHeight >= 20000 && nHeight <= 29999)
-        {
-            nSubsidy = 10 * COIN;
-        }
-
-    else if(nHeight >= 30000 && nHeight <= 99999)
-        {
-            nSubsidy = 5 * COIN;
-        }
-
-    else if(nHeight >= 100000 && nHeight <= 199999)
-        {
-            nSubsidy = 2.5 * COIN;
-        }
-
-    else if(nHeight >= 200000 && nHeight <= 9770000)
-        {
-            nSubsidy = 1 * COIN;
-        }
-
-    LogPrint("creation", "GetProofOfStakeReward(): create=%s nCoinAge=%d\n", FormatMoney(nSubsidy), nCoinAge);
-
+    // some scary rounding dirty trick here for leap / non-leap years
+    // CoinAge=365 -> nSubsidy=9993
+    // CoinAge=366 -> nSubsidy=10020
+    int64_t nSubsidy = nCoinAge * Params().GetConsensus().nInterestRate * 33 / (365 * 33 + 8);
     return nSubsidy + nFees;
 }
 
@@ -7936,3 +7854,93 @@ unsigned int ComputeMaxBits(arith_uint256 bnTargetLimit, unsigned int nBase, int
         bnResult = bnTargetLimit;
     return bnResult.GetCompact();
 }
+
+// linear coin-aging function
+int64_t GetCoinAgeWeightLinear(int64_t nIntervalBeginning, int64_t nIntervalEnd)
+{
+    // Kernel hash weight starts from 0 at the min age
+    // this change increases active coins participating the hash and helps
+    // to secure the network when proof-of-stake difficulty is low
+    return max((int64_t)0, min(nIntervalEnd - nIntervalBeginning - Params().GetConsensus().nStakeMinAge, Params().GetConsensus().nStakeMaxAge));
+}
+
+/* PoSV: Coin-aging function
+ * =================================================
+ * WARNING
+ * =================================================
+ * The parameters used in this function are the
+ * solutions to a set of intricate mathematical
+ * equations chosen specifically to incentivise
+ * owners of Potcoin to participate in minting.
+ * These parameters are also affected by the values
+ * assigned to other variables such as expected
+ * block confirmation time.
+ * If you are merely forking the source code of
+ * Potcoin, it's highly UNLIKELY that this set of
+ * parameters work for your purpose. In particular,
+ * if you have tweaked the values of other variables,
+ * this set of parameters are certainly no longer
+ * valid. You should revert back to the linear
+ * function above or the security of your network
+ * will be significantly impaired.
+ * In short, do not use or change this function
+ * unless you have spoken to the author.
+ * =================================================
+ * DO NOT USE OR CHANGE UNLESS YOU ABSOLUTELY
+ * KNOW WHAT YOU ARE DOING.
+ * =================================================
+ */
+int64_t GetCoinAgeWeight(int64_t nIntervalBeginning, int64_t nIntervalEnd)
+{
+
+    int64_t nSeconds = max((int64_t)0, nIntervalEnd - nIntervalBeginning - Params().GetConsensus().nStakeMinAge);
+    double days = double(nSeconds) / (24 * 60 * 60);
+    double weight = 0;
+
+    if (days <= 7)
+    {
+        weight = -0.00408163 * pow(days, 3) + 0.05714286 * pow(days, 2) + days;
+    }
+    else
+    {
+        weight = 8.4 * log(days) - 7.94564525;
+    }
+
+    return min((int64_t)(weight * 24 * 60 * 60), Params().GetConsensus().nStakeMaxAge);
+}
+// The stake modifier used to hash for a stake kernel is chosen as the stake
+// modifier about a selection interval later than the coin generating the kernel
+bool GetKernelStakeModifier(uint256 hashBlockFrom, uint64_t& nStakeModifier, int& nStakeModifierHeight, int64_t& nStakeModifierTime, bool fPrintProofOfStake)
+{
+    nStakeModifier = 0;
+    if (!mapBlockIndex.count(hashBlockFrom))
+        return error("GetKernelStakeModifier() : block not indexed");
+    const CBlockIndex* pindexFrom = mapBlockIndex[hashBlockFrom];
+    nStakeModifierHeight = pindexFrom->nHeight;
+    nStakeModifierTime = pindexFrom->GetBlockTime();
+    int64_t nStakeModifierSelectionInterval = GetStakeModifierSelectionInterval();
+    const CBlockIndex* pindex = pindexFrom;
+    // loop to find the stake modifier later by a selection interval
+    while (nStakeModifierTime < pindexFrom->GetBlockTime() + nStakeModifierSelectionInterval)
+    {
+        if (!chainActive.Next(pindex))
+        {   // reached best block; may happen if node is behind on block chain
+            if (fPrintProofOfStake || (pindex->GetBlockTime() + Params().GetConsensus().nStakeMinAge - nStakeModifierSelectionInterval > GetAdjustedTime()))
+                return error("GetKernelStakeModifier() : reached best block at height %d from block at hight %d",
+                    pindex->nHeight, pindexFrom->nHeight);
+            else
+                return false;
+        }
+        pindex = chainActive.Next(pindex);
+        if (pindex->GeneratedStakeModifier())
+        {
+            nStakeModifierHeight = pindex->nHeight;
+            nStakeModifierTime = pindex->GetBlockTime();
+	    nStakeModifier = pindex->nStakeModifier;
+            // printf("GetKernelStakeModifier : nStakeModifierHeight=%d\n", nStakeModifierHeight);
+        }
+    }
+    nStakeModifier = pindex->nStakeModifier;
+    return true;
+}
+

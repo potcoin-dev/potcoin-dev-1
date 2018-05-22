@@ -74,7 +74,7 @@ int64_t UpdateTime(CBlockHeader* pblock, const Consensus::Params& consensusParam
 
     // Updating time can change work required on testnet:
     if (consensusParams.fPowAllowMinDifficultyBlocks)
-        pblock->nBits = GetNextTargetRequired(pindexPrev, true);
+	pblock->nBits = GetNextWorkRequired(pindexPrev, pblock, consensusParams);
 
     return nNewTime - nOldTime;
 }
@@ -202,7 +202,7 @@ CBlockTemplate* BlockAssembler::CreateNewBlock(const CScript& scriptPubKeyIn, bo
     pblock->hashPrevBlock  = pindexPrev->GetBlockHash();
     if (!fProofOfStake)
         UpdateTime(pblock, chainparams.GetConsensus(), pindexPrev);
-    pblock->nBits          = fProofOfStake ? GetNextTargetRequired(pindexPrev, true) : GetNextWorkRequired(pindexPrev, pblock, chainparams.GetConsensus());
+    pblock->nBits          = GetNextWorkRequired(pindexPrev, pblock, chainparams.GetConsensus());
     pblock->nNonce         = 0;
     pblocktemplate->vTxSigOpsCost[0] = WITNESS_SCALE_FACTOR * GetLegacySigOpCount(pblock->vtx[0]);
 
@@ -750,7 +750,12 @@ bool SignBlock(CBlock *pblock, CWallet& wallet, int64_t nFees)
           {
               // make sure coinstake would meet timestamp protocol
               //    as it would be the same as the block timestamp
-              pblock->vtx[0].nTime = pblock->nTime = txCoinStake.nTime;
+	      CMutableTransaction alteredMutableTx = CMutableTransaction(pblock->vtx[0]);
+              alteredMutableTx.nTime = pblock->nTime = txCoinStake.nTime;
+	      CTransaction alteredTx;
+	      *static_cast<CTransaction*>(&alteredTx) = CTransaction(alteredMutableTx);
+	      alteredTx.UpdateHash();
+	      pblock->vtx[0] = alteredTx;
 
               // we have to make sure that we have no future timestamps in
               //    our transactions set
@@ -760,7 +765,6 @@ bool SignBlock(CBlock *pblock, CWallet& wallet, int64_t nFees)
               *static_cast<CTransaction*>(&txNew) = CTransaction(txCoinStake);
               pblock->vtx.insert(pblock->vtx.begin() + 1, txNew);
 
-              pblock->vtx[0].UpdateHash();
               pblock->hashMerkleRoot = BlockMerkleRoot(*pblock);
 
               return key.SignNav(pblock->GetHash(), pblock->vchBlockSig);

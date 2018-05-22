@@ -40,6 +40,19 @@ bool CCoinsViewDB::GetCoins(const uint256 &txid, CCoins &coins) const {
     return db.Read(make_pair(DB_COINS, txid), coins);
 }
 
+void static BatchWriteCoins(CDBBatch &batch, const uint256 &hash, const CCoins &coins) {
+    if (coins.IsPruned())
+        batch.Erase(make_pair('c', hash));
+    else
+        batch.Write(make_pair('c', hash), coins);
+}
+
+bool CCoinsViewDB::SetCoins(const uint256 &txid, const CCoins &coins) {
+    CDBBatch batch(db);
+    BatchWriteCoins(batch, txid, coins);
+    return db.WriteBatch(batch);
+}
+
 bool CCoinsViewDB::HaveCoins(const uint256 &txid) const {
     return db.Exists(make_pair(DB_COINS, txid));
 }
@@ -354,14 +367,14 @@ bool CBlockTreeDB::LoadBlockIndexGuts(boost::function<CBlockIndex*(const uint256
                 pindexNew->nNonce         = diskindex.nNonce;
                 pindexNew->nStatus        = diskindex.nStatus;
                 pindexNew->nTx            = diskindex.nTx;
+
                 pindexNew->nMint          = diskindex.nMint;
                 pindexNew->nMoneySupply   = diskindex.nMoneySupply;
                 pindexNew->nFlags         = diskindex.nFlags;
                 pindexNew->nStakeModifier = diskindex.nStakeModifier;
-                pindexNew->bnStakeModifierV2 = diskindex.bnStakeModifierV2;
+		pindexNew->hashProof      = diskindex.hashProof;
                 pindexNew->prevoutStake   = diskindex.prevoutStake;
                 pindexNew->nStakeTime     = diskindex.nStakeTime;
-                pindexNew->hashProof      = diskindex.hashProof;
 
                 pcursor->Next();
             } else {

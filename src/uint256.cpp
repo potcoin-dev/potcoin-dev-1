@@ -80,19 +80,3 @@ template std::string base_blob<256>::GetHex() const;
 template std::string base_blob<256>::ToString() const;
 template void base_blob<256>::SetHex(const char*);
 template void base_blob<256>::SetHex(const std::string&);
-
-// Explicit instantiations for base_blob<512>
-template base_blob<512>::base_blob(const std::vector<unsigned char>&);
-template std::string base_blob<512>::GetHex() const;
-template std::string base_blob<512>::ToString() const;
-template void base_blob<512>::SetHex(const char*);
-template void base_blob<512>::SetHex(const std::string&);
-
-// uint256 Uint512ToUint256(const uint512 &a)
-// {
-//     uint256 b;
-//
-//     for(int x=0; x<b.WIDTH; ++x)
-//         b.data[x] = ReadLE32(a.begin() + x*4);
-//     return b;
-// }

@@ -6,6 +6,7 @@
 #include "wallet/wallet.h"
 
 #include "base58.h"
+#include "bignum.h"
 #include "checkpoints.h"
 #include "chain.h"
 #include "coincontrol.h"
@@ -219,8 +220,6 @@ uint64_t CWallet::GetStakeWeight() const
 
     uint64_t nWeight = 0;
 
-    int64_t nCurrentTime = GetTime();
-
     LOCK2(cs_main, cs_wallet);
     BOOST_FOREACH(PAIRTYPE(const CWalletTx*, unsigned int) pcoin, setCoins)
     {
@@ -228,7 +227,7 @@ uint64_t CWallet::GetStakeWeight() const
         if (!mapWallet.count(pcoin.first->GetHash()))
             continue;
 
-        if (pcoin.first->GetDepthInMainChain() >= nStakeMinConfirmations)
+        if (pcoin.first->GetDepthInMainChain() >= Params().GetConsensus().nCoinbaseMaturityV2)
             nWeight += pcoin.first->vout[pcoin.second].nValue;
     }
 
@@ -253,7 +252,7 @@ void CWallet::AvailableCoinsForStaking(vector<COutput>& vCoins, unsigned int nSp
             if (nDepth < 1)
                 continue;
 
-            if (nDepth < nStakeMinConfirmations)
+            if (nDepth < Params().GetConsensus().nCoinbaseMaturityV2)
                 continue;
 
             for (unsigned int i = 0; i < pcoin->vout.size(); i++)
@@ -425,8 +424,6 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
         if (txNew.vout.size() == 2 && ((pcoin.first->vout[pcoin.second].scriptPubKey == scriptPubKeyKernel || pcoin.first->vout[pcoin.second].scriptPubKey == txNew.vout[1].scriptPubKey))
             && pcoin.first->GetHash() != txNew.vin[0].prevout.hash)
         {
-            int64_t nTimeWeight = GetWeight((int64_t)pcoin.first->nTime, (int64_t)txNew.nTime);
-
             // Stop adding more inputs if already too many inputs
             if (txNew.vin.size() >= 100)
                 break;
@@ -1482,12 +1479,13 @@ void CWallet::SyncTransaction(const CTransaction& tx, const CBlockIndex *pindex,
     // available of the outputs it spends. So force those to be
     // recomputed, also:
 
-    if(isMine == true)
+    if(isMine == true) {
         BOOST_FOREACH(const CTxIn& txin, tx.vin)
         {
             if (mapWallet.count(txin.prevout.hash))
                 mapWallet[txin.prevout.hash].MarkDirty();
         }
+    }
 
     if (!fConnect && tx.IsCoinStake() && IsFromMe(tx))
     {
@@ -2844,7 +2842,7 @@ bool CWallet::CreateTransaction(const vector<CRecipient>& vecSend, CWalletTx& wt
                 }
 
                 // Embed the constructed transaction data in wtxNew.
-                *static_cast<CTransaction*>(&wtxNew) = CTransaction(txNew);
+                *static_cast<CMutableTransaction*>(&wtxNew) = CMutableTransaction(txNew);
 
                 // Limit size
                 if (GetTransactionWeight(txNew) >= MAX_STANDARD_TX_WEIGHT)
@@ -4045,7 +4043,12 @@ int CMerkleTx::GetBlocksToMaturity() const
 {
     if (!(IsCoinBase() || IsCoinStake()))
         return 0;
-    return max(0, (COINBASE_MATURITY+1) - GetDepthInMainChain());
+
+    if (chainActive.Height() < Params().GetConsensus().nDigiShieldStartingHeight) {
+        return max(0, ((int)Params().GetConsensus().nCoinbaseMaturityV1+20) - GetDepthInMainChain());
+    } else {
+	return max(0, ((int)Params().GetConsensus().nCoinbaseMaturityV2+20) - GetDepthInMainChain());
+    }
 }
 
 

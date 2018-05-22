@@ -47,6 +47,7 @@ public:
         ::Unserialize(*this->stream, obj, nType, nVersion);
         return (*this);
     }
+    int GetType() const { return nType; }
 };
 
 template<typename S>
@@ -553,6 +554,8 @@ public:
             src = NULL;
         }
     }
+
+    int GetType() const { return nType; }
 
     // check whether we're at the end of the source file
     bool eof() const {

@@ -3,8 +3,8 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#ifndef KEKCOIN_PRIMITIVES_BLOCK_H
-#define KEKCOIN_PRIMITIVES_BLOCK_H
+#ifndef BITCOIN_PRIMITIVES_BLOCK_H
+#define BITCOIN_PRIMITIVES_BLOCK_H
 
 #include "primitives/transaction.h"
 #include "serialize.h"
@@ -22,6 +22,9 @@
 class CBlockHeader
 {
 public:
+    // TX Version on POSV Switch
+    static const int32_t POSV_BLOCK_VERSION=2;
+
     // header
     int32_t nVersion;
     uint256 hashPrevBlock;
@@ -40,6 +43,7 @@ public:
     template <typename Stream, typename Operation>
     inline void SerializationOp(Stream& s, Operation ser_action, int nType, int nVersion) {
         READWRITE(this->nVersion);
+	nVersion = this->nVersion;
         READWRITE(hashPrevBlock);
         READWRITE(hashMerkleRoot);
         READWRITE(nTime);
@@ -62,9 +66,6 @@ public:
         return (nBits == 0);
     }
 
-    uint256 GetHash() const;
-    uint256 GetPoWHash() const;
-
     unsigned int GetStakeEntropyBit() const
     {
         // Take last bit of block hash as entropy bit
@@ -72,14 +73,14 @@ public:
         return nEntropyBit;
     }
 
+    uint256 GetHash() const;
 
+    uint256 GetPoWHash() const;
 
     int64_t GetBlockTime() const
     {
         return (int64_t)nTime;
     }
-
-    std::string ToString() const;
 };
 
 
@@ -88,6 +89,7 @@ class CBlock : public CBlockHeader
 public:
     // network and disk
     std::vector<CTransaction> vtx;
+
     // ppcoin: block signature - signed by one of the coin base txout[N]'s owner
     std::vector<unsigned char> vchBlockSig;
 
@@ -111,6 +113,11 @@ public:
     template <typename Stream, typename Operation>
     inline void SerializationOp(Stream& s, Operation ser_action, int nType, int nVersion) {
         READWRITE(*(CBlockHeader*)this);
+	READWRITE(vtx);
+	if (this->nVersion > 2)
+	    READWRITE(vchBlockSig);
+
+	/*
         // ConnectBlock depends on vtx following header to generate CDiskTxPos
         if (!(nType & (SER_GETHASH|SER_BLOCKHEADERONLY)))
         {
@@ -121,7 +128,7 @@ public:
         {
             const_cast<CBlock*>(this)->vtx.clear();
             const_cast<CBlock*>(this)->vchBlockSig.clear();
-        }
+        }*/
     }
 
     uint256 BuildMerkleTree() const
@@ -148,9 +155,9 @@ public:
     {
         CBlockHeader::SetNull();
         vtx.clear();
-        vchBlockSig.clear();
-        vMerkleTree.clear();
         fChecked = false;
+        vchBlockSig.clear(); // ppcoin
+        vMerkleTree.clear();
     }
 
     bool IsProofOfStake() const
@@ -173,6 +180,15 @@ public:
         block.nBits          = nBits;
         block.nNonce         = nNonce;
         return block;
+    }
+
+    // ppcoin: get max transaction timestamp
+    int64_t GetMaxTransactionTime() const
+    {
+        int64_t maxTransactionTime = 0;
+	for (const CTransaction& tx : vtx)
+            maxTransactionTime = std::max(maxTransactionTime, (int64_t)tx.nTime);
+        return maxTransactionTime;
     }
 
     std::string ToString() const;
@@ -211,10 +227,9 @@ struct CBlockLocator
     {
         return vHave.empty();
     }
-
 };
 
 /** Compute the consensus-critical block weight (see BIP 141). */
 int64_t GetBlockWeight(const CBlock& tx);
 
-#endif // KEKCOIN_PRIMITIVES_BLOCK_H
+#endif // BITCOIN_PRIMITIVES_BLOCK_H

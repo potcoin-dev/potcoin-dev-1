@@ -54,13 +54,57 @@ struct Params {
     uint32_t nRuleChangeActivationThreshold;
     uint32_t nMinerConfirmationWindow;
     BIP9Deployment vDeployments[MAX_VERSION_BITS_DEPLOYMENTS];
+
     /** Proof of work parameters */
-    uint256 powLimit;
     bool fPowAllowMinDifficultyBlocks;
     bool fPowNoRetargeting;
-    int64_t nPowTargetSpacing;
-    int64_t nPowTargetTimespan;
-    int64_t DifficultyAdjustmentInterval() const { return nPowTargetTimespan / nPowTargetSpacing; }
+
+    /**
+     * Difficulty Related Parameters
+     */
+    uint256 powLimit;
+
+    int64_t nBitcoinStartingHeight;
+    int64_t nBitcoinTargetTimespan;
+    int64_t nBitcoinTargetSpacing;
+    int64_t BitcoinDifficultyAdjustmentInterval() const { return nBitcoinTargetTimespan / nBitcoinTargetSpacing; }
+
+    int64_t nDigiShieldStartingHeight;
+    int64_t nDigiShieldTargetTimespan;
+    int64_t nDigiShieldTargetSpacing;
+    int64_t DigiShieldDifficultyAdjustmentInterval() const { return nDigiShieldTargetTimespan / nDigiShieldTargetSpacing; }
+
+    int64_t nKimotoGravityWellV1StartingHeight;
+    int64_t nKimotoGravityWellV1TargetTimespan;
+    int64_t nKimotoGravityWellV1TargetSpacing;
+    int64_t KimotoGravityWellV1DifficltyAdjusmentInterval() const { return nKimotoGravityWellV1TargetTimespan / nKimotoGravityWellV1TargetSpacing; }
+
+    int64_t nKimotoGravityWellV2StartingHeight;
+    int64_t nKimotoGravityWellV2TargetTimespan;
+    int64_t nKimotoGravityWellV2TargetSpacing;
+    int64_t KimotoGravityWellDifficultyAdjusmentInterval() const { return nKimotoGravityWellV2TargetTimespan / nKimotoGravityWellV2TargetSpacing; }
+
+    uint256 posLimit;
+    int64_t nPOSStartingHeight;
+    int64_t nPOSTargetTimespan;
+    int64_t nPOSTargetSpacing;
+    int64_t POSDifficultyAdjustmentInterval() const { return nPOSTargetTimespan / nPOSTargetSpacing; }
+
+    /**
+     * POS Related Settings
+     */
+    int64_t nLastPOWBlock;
+    int64_t nInterestRate;
+    int64_t nStakeMinAge;
+    int64_t nStakeMaxAge;
+    unsigned int nStakeModifierInterval;
+
+    /**
+     * Coinbase Spending Settings
+     */
+    int64_t nCoinbaseMaturityV1;
+    int64_t nCoinbaseMaturityV2;
+
 };
 } // namespace Consensus
 

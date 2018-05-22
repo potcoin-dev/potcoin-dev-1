@@ -493,28 +493,26 @@ public:
             READWRITE(VARINT(nDataPos));
         if (nStatus & BLOCK_HAVE_UNDO)
             READWRITE(VARINT(nUndoPos));
+
+	// block header
+	READWRITE(this->nVersion);
+	READWRITE(hashPrev);
+	READWRITE(hashMerkleRoot);
+	READWRITE(nTime);
+	READWRITE(nBits);
+	READWRITE(nNonce);
+
+	// ppcoin
+	READWRITE(nMint);
+	READWRITE(nMoneySupply);
         READWRITE(nFlags);
         READWRITE(nStakeModifier);
-	READWRITE(bnStakeModifierV2);
+	READWRITE(hashProof);
         if (IsProofOfStake())
         {
             READWRITE(prevoutStake);
             READWRITE(nStakeTime);
         }
-        else if (ser_action.ForRead())
-        {
-            const_cast<CDiskBlockIndex*>(this)->prevoutStake.SetNull();
-            const_cast<CDiskBlockIndex*>(this)->nStakeTime = 0;
-        }
-        READWRITE(hashProof);
-        // block header
-        READWRITE(this->nVersion);
-        READWRITE(hashPrev);
-        READWRITE(hashMerkleRoot);
-        READWRITE(nTime);
-        READWRITE(nBits);
-        READWRITE(nNonce);
-        READWRITE(blockHash);
     }
 
     uint256 GetBlockHash() const

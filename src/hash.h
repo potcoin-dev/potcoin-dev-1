@@ -138,6 +138,7 @@ public:
 
     CHashWriter(int nTypeIn, int nVersionIn) : nType(nTypeIn), nVersion(nVersionIn) {}
 
+    int GetType() const { return nType; }
     CHashWriter& write(const char *pch, size_t size) {
         ctx.Write((const unsigned char*)pch, size);
         return (*this);

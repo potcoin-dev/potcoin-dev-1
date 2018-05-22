@@ -3,8 +3,8 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#ifndef KEKCOIN_UINT256_H
-#define KEKCOIN_UINT256_H
+#ifndef BITCOIN_UINT256_H
+#define BITCOIN_UINT256_H
 
 #include <assert.h>
 #include <cstring>
@@ -42,37 +42,11 @@ public:
         memset(data, 0, sizeof(data));
     }
 
-
     inline int Compare(const base_blob& other) const { return memcmp(data, other.data, sizeof(data)); }
 
     friend inline bool operator==(const base_blob& a, const base_blob& b) { return a.Compare(b) == 0; }
     friend inline bool operator!=(const base_blob& a, const base_blob& b) { return a.Compare(b) != 0; }
-    friend inline bool operator<(const base_blob& a, const base_blob& b)
-    {
-        for (int i = base_blob::WIDTH-1; i >= 0; i--)
-        {
-            if (a.data[i] < b.data[i])
-                return true;
-            else if (a.data[i] > b.data[i])
-                return false;
-        }
-        return false;
-    }
-    friend inline bool operator>(const base_blob& a, const base_blob& b)
-    {
-        for (int i = base_blob::WIDTH-1; i >= 0; i--)
-        {
-            if (a.data[i] > b.data[i])
-                return true;
-            else if (a.data[i] < b.data[i])
-                return false;
-        }
-        return false;
-    }
-    // friend inline bool operator<(const base_blob& a, const base_blob& b) { return a.Compare(b) < 0; }
-    friend inline base_blob operator<<(const base_blob& a, const base_blob& b) { return a << b; }
-    friend inline base_blob operator>>(const base_blob& a, const base_blob& b) { return a >> b; }
-
+    friend inline bool operator<(const base_blob& a, const base_blob& b) { return a.Compare(b) < 0; }
 
     std::string GetHex() const;
     void SetHex(const char* psz);
@@ -104,6 +78,12 @@ public:
         return sizeof(data);
     }
 
+    uint64_t GetLow64() const
+    {
+        assert(WIDTH >= 2);
+        return data[0] | (uint64_t)data[1] << 32;
+    }
+
     unsigned int GetSerializeSize(int nType, int nVersion) const
     {
         return sizeof(data);
@@ -133,7 +113,6 @@ public:
     {
         s.read((char*)data, sizeof(data));
     }
-
     friend class uint512;
 };
 
@@ -147,7 +126,6 @@ public:
     uint160(const base_blob<160>& b) : base_blob<160>(b) {}
     explicit uint160(const std::vector<unsigned char>& vch) : base_blob<160>(vch) {}
 };
-
 
 /** 256-bit opaque blob.
  * @note This type is called uint256 for historical reasons only. It is an
@@ -168,39 +146,6 @@ public:
     uint64_t GetCheapHash() const
     {
         return ReadLE64(data);
-    }
-
-    friend inline bool operator>(const uint256& a, const uint256& b)
-    {
-        for (int i = (256>>3)-1; i >= 0; i--)
-        {
-            if (a.data[i] > b.data[i])
-                return true;
-            else if (a.data[i] < b.data[i])
-                return false;
-        }
-        return false;
-    }
-
-
-    // friend uint256 Uint512ToUint256(const uint512 &a);
-};
-
-/** 512-bit opaque blob.
- */
-class uint512 : public base_blob<512> {
-public:
-    uint512() {}
-    uint512(const base_blob<512>& b) : base_blob<512>(b) {}
-    explicit uint512(const std::vector<unsigned char>& vch) : base_blob<512>(vch) {}
-
-    uint256 trim256() const
-    {
-        uint256 ret;
-        for (unsigned int i = 0; i < uint256::WIDTH; i++){
-            ret.data[i] = data[i];
-        }
-        return ret;
     }
 };
 
@@ -224,6 +169,25 @@ inline uint256 uint256S(const std::string& str)
     rv.SetHex(str);
     return rv;
 }
+
+/** 512-bit opaque blob.
+ */
+class uint512 : public base_blob<512> {
+public:
+    uint512() {}
+    uint512(const base_blob<512>& b) : base_blob<512>(b) {}
+    explicit uint512(const std::vector<unsigned char>& vch) : base_blob<512>(vch) {}
+
+    uint256 trim256() const
+    {
+        uint256 ret;
+        for (unsigned int i = 0; i < uint256::WIDTH; i++){
+            ret.data[i] = data[i];
+        }
+        return ret;
+    }
+};
+
 uint256 Uint512ToUint256(const uint512 &a);
 
-#endif // KEKCOIN_UINT256_H
+#endif // BITCOIN_UINT256_H

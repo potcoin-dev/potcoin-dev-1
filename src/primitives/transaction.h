@@ -32,8 +32,9 @@ public:
 
     template <typename Stream, typename Operation>
     inline void SerializationOp(Stream& s, Operation ser_action, int nType, int nVersion) {
-        READWRITE(hash);
-        READWRITE(n);
+	READWRITE(FLATDATA(*this));
+        //READWRITE(hash);
+        //READWRITE(n);
     }
 
     void SetNull() { hash.SetNull(); n = (uint32_t) -1; }
@@ -282,12 +283,14 @@ struct CMutableTransaction;
 /**
  * Basic transaction serialization format:
  * - int32_t nVersion
+ * - unsigned int nTime
  * - std::vector<CTxIn> vin
  * - std::vector<CTxOut> vout
  * - uint32_t nLockTime
  *
  * Extended transaction serialization format:
  * - int32_t nVersion
+ * - unsigned int nTime
  * - unsigned char dummy = 0x00
  * - unsigned char flags (!= 0)
  * - std::vector<CTxIn> vin
@@ -299,7 +302,6 @@ struct CMutableTransaction;
 template<typename Stream, typename Operation, typename TxType>
 inline void SerializeTransaction(TxType& tx, Stream& s, Operation ser_action, int nType, int nVersion) {
     READWRITE(*const_cast<int32_t*>(&tx.nVersion));
-    READWRITE(*const_cast<unsigned int*>(&tx.nTime));
     unsigned char flags = 0;
     if (ser_action.ForRead()) {
         const_cast<std::vector<CTxIn>*>(&tx.vin)->clear();
@@ -351,6 +353,8 @@ inline void SerializeTransaction(TxType& tx, Stream& s, Operation ser_action, in
         }
     }
     READWRITE(*const_cast<uint32_t*>(&tx.nLockTime));
+    if (tx.nVersion > 2)
+        READWRITE(*const_cast<unsigned int*>(&tx.nTime));
 }
 
 /** The basic transaction that is broadcasted on the network and contained in
@@ -363,15 +367,15 @@ private:
 
 public:
     // Default transaction version.
-    static const int32_t CURRENT_VERSION=1;
+    static const int32_t CURRENT_VERSION=3;
 
-    static const int32_t TXDZEEL_VERSION=2;
-
+    // TX Version on POSV Switch
+    static const int32_t POSV_TRANSACTION_VERSION=3;
     // Changing the default transaction version requires a two step process: first
     // adapting relay policy by bumping MAX_STANDARD_VERSION, and then later date
     // bumping the default CURRENT_VERSION at which point both CURRENT_VERSION and
     // MAX_STANDARD_VERSION will be equal.
-    static const int32_t MAX_STANDARD_VERSION=2;
+    static const int32_t MAX_STANDARD_VERSION=4;
 
     // The local variables are made const to prevent unintended modification
     // without updating the cached hash value. However, CTransaction is not
@@ -379,7 +383,7 @@ public:
     // and bypass the constness. This is safe, as they update the entire
     // structure, including the hash.
     const int32_t nVersion;
-    unsigned int nTime;
+    const unsigned int nTime;
     std::vector<CTxIn> vin;
     std::vector<CTxOut> vout;
     CTxWitness wit; // Not const: can change without invalidating the txid cache
@@ -490,6 +494,16 @@ struct CMutableTransaction
      * fly, as opposed to GetHash() in CTransaction, which uses a cached result.
      */
     uint256 GetHash() const;
+
+    // Return sum of txouts.
+    CAmount GetValueOut() const;
+
+    // Compute priority, given priority of inputs and (optionally) tx size
+    double ComputePriority(double dPriorityInputs, unsigned int nTxSize=0) const;
+
+    // Compute modified tx size for priority calculation (optionally given tx size)
+    unsigned int CalculateModifiedSize(unsigned int nTxSize=0) const;
+
     std::string ToString() const;
 };
 
